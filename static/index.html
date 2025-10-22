@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Adversarial Deepfake Detector — Demo</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; }
+      .row { display:flex; gap:16px; align-items:center }
+      .imgbox { border: 1px solid #ccc; padding:8px }
+      img { max-width: 320px; height: auto; display:block }
+    </style>
+  </head>
+  <body>
+    <h1>Adversarial Demo</h1>
+    <p>This page shows a side-by-side demo (clean vs attacked) and allows you to upload an image to check if it is adversarially attacked.</p>
+
+    <div id="demo" class="row">
+      <div class="imgbox">
+        <h3>Clean</h3>
+        <img id="img-clean" src="/static/demo_clean.png" alt="clean" />
+      </div>
+      <div class="imgbox">
+        <h3>Attacked</h3>
+        <img id="img-attacked" src="/static/demo_attacked.png" alt="attacked" />
+      </div>
+    </div>
+
+    <h2>Upload an image to check</h2>
+    <form id="upload-form">
+      <input type="file" name="file" id="file-input" accept="image/*" />
+      <button type="submit">Upload & Check</button>
+    </form>
+    <pre id="result"></pre>
+
+    <script>
+      async function loadDemo() {
+        try {
+          const res = await fetch('/demo');
+          const j = await res.json();
+          document.getElementById('img-clean').src = j.demo_images.clean;
+          document.getElementById('img-attacked').src = j.demo_images.attacked;
+        } catch(e){ console.warn('demo load failed', e) }
+      }
+      document.getElementById('upload-form').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const f = document.getElementById('file-input').files[0];
+        if(!f) return alert('choose a file');
+        const fd = new FormData(); fd.append('file', f);
+        const res = await fetch('/upload', { method:'POST', body: fd });
+        const j = await res.json();
+        document.getElementById('result').textContent = JSON.stringify(j, null, 2);
+      });
+      loadDemo();
+    </script>
+  </body>
+</html>
