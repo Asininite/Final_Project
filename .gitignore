@@ -1,1 +1,68 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+.ipynb_checkpoints/
+
+# Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Logs, runs, and debug output
+*.log
+logs/
+runs/
+tensorboard/
+wandb/
+
+# Checkpoints and model artifacts
+artifacts/
+*.pt
+*.pth
+*.ckpt
+
+# Local data (keep code separate from datasets on Git)
+# Create data/.gitkeep if you want the folder present without contents
+/data/
+
+# Temporary files and preprocess temps
+**/tmp/
+**/tmp_frames/
+
+# IDE/editor settings
+.vscode/
+.vscode-test/
+.idea/
+*.code-workspace
+
+# Node / web (for server/static frontend)
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.cache/
+
+# Test/coverage
+.tox/
+.pytest_cache/
+.coverage
+htmlcov/
