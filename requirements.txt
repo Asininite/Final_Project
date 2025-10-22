@@ -11,3 +11,6 @@ facenet-pytorch
 fastapi
 uvicorn
 python-multipart
+
+# Models
+timm>=0.9

@@ -11,49 +11,73 @@ from datasets.ffpp_dataset import FFPPFramesDataset
 from backbones import get_model_and_transforms
 from attacks import fgsm_attack, pgd_attack, cw_attack
 from utils import count_parameters, to_device
+from losses import afsl_loss
 
 
-def train_epoch(model, dataloader, optimizer, device, adv_train: str = 'none', eps: float = 0.03, pgd_steps: int = 7, pgd_alpha: float = 0.01, mix_ratio: float = 1.0):
+def train_epoch(model, dataloader, optimizer, device,
+                adv_train: str = 'none', eps: float = 0.03, pgd_steps: int = 7, pgd_alpha: float = 0.01, mix_ratio: float = 1.0,
+                use_afsl: bool = False, afsl_attack: str = 'fgsm', lambda_adv: float = 1.0, lambda_sim: float = 1.0, sim_metric: str = 'cosine'):
     model.train()
     total_loss = 0.0
     correct = 0
     total = 0
+    # For AFSL component tracking
+    afsl_sums = {'l_cls': 0.0, 'l_adv': 0.0, 'l_sim': 0.0}
+    afsl_batches = 0
     for imgs, labels in dataloader:
         imgs, labels = to_device((imgs, labels), device)
         optimizer.zero_grad()
-
-        if adv_train and adv_train != 'none':
-            if adv_train == 'fgsm':
-                adv_imgs = fgsm_attack(model, imgs, labels, epsilon=eps)
-            elif adv_train == 'pgd':
-                adv_imgs = pgd_attack(model, imgs, labels, epsilon=eps, alpha=pgd_alpha, iters=pgd_steps)
-            else:
-                adv_imgs = None
-            if adv_imgs is not None:
-                if mix_ratio >= 1.0:
-                    imgs_for_loss = torch.cat([imgs, adv_imgs], dim=0)
-                    labels_for_loss = torch.cat([labels, labels], dim=0)
+        if use_afsl:
+            # AFSL combined loss over clean+adv with feature similarity
+            loss, parts, logits_clean = afsl_loss(
+                model, imgs, labels,
+                attack=afsl_attack, eps=eps, pgd_steps=pgd_steps, pgd_alpha=pgd_alpha,
+                lambda_adv=lambda_adv, lambda_sim=lambda_sim, sim_metric=sim_metric,
+            )
+            outputs = logits_clean  # for accuracy, use clean logits
+            afsl_sums['l_cls'] += parts['l_cls']
+            afsl_sums['l_adv'] += parts['l_adv']
+            afsl_sums['l_sim'] += parts['l_sim']
+            afsl_batches += 1
+        else:
+            if adv_train and adv_train != 'none':
+                if adv_train == 'fgsm':
+                    adv_imgs = fgsm_attack(model, imgs, labels, epsilon=eps)
+                elif adv_train == 'pgd':
+                    adv_imgs = pgd_attack(model, imgs, labels, epsilon=eps, alpha=pgd_alpha, iters=pgd_steps)
                 else:
-                    # mix a fraction of adv examples
-                    b = imgs.size(0)
-                    k = int(b * mix_ratio)
-                    imgs_for_loss = torch.cat([imgs[:b-k], adv_imgs[:k]], dim=0)
-                    labels_for_loss = torch.cat([labels[:b-k], labels[:k]], dim=0)
+                    adv_imgs = None
+                if adv_imgs is not None:
+                    if mix_ratio >= 1.0:
+                        imgs_for_loss = torch.cat([imgs, adv_imgs], dim=0)
+                        labels_for_loss = torch.cat([labels, labels], dim=0)
+                    else:
+                        # mix a fraction of adv examples
+                        b = imgs.size(0)
+                        k = int(b * mix_ratio)
+                        imgs_for_loss = torch.cat([imgs[:b-k], adv_imgs[:k]], dim=0)
+                        labels_for_loss = torch.cat([labels[:b-k], labels[:k]], dim=0)
+                else:
+                    imgs_for_loss, labels_for_loss = imgs, labels
             else:
                 imgs_for_loss, labels_for_loss = imgs, labels
-        else:
-            imgs_for_loss, labels_for_loss = imgs, labels
 
-        outputs = model(imgs_for_loss)
-        loss = F.cross_entropy(outputs, labels_for_loss)
+            outputs = model(imgs_for_loss)
+            loss = F.cross_entropy(outputs, labels_for_loss)
         loss.backward()
         optimizer.step()
-        total_loss += loss.item() * imgs_for_loss.size(0)
+        # Use batch size for aggregation; for AFSL, count clean batch size
+        batch_count = imgs.size(0) if use_afsl else imgs_for_loss.size(0)
+        total_loss += loss.item() * batch_count
         with torch.no_grad():
             preds = outputs.argmax(dim=1)
-            correct += (preds == labels_for_loss).sum().item()
-            total += imgs_for_loss.size(0)
-    return total_loss / total, correct / total
+            target = labels if use_afsl else labels_for_loss
+            correct += (preds == target).sum().item()
+            total += batch_count
+    metrics = None
+    if use_afsl and afsl_batches > 0:
+        metrics = {k: v / afsl_batches for k, v in afsl_sums.items()}
+    return total_loss / total, correct / total, metrics
 
 
 def eval_epoch(model, dataloader, device, attack_mode: str = 'none', eps: float = 0.03, pgd_steps: int = 10, pgd_alpha: float = 0.01):
@@ -96,6 +120,13 @@ def main():
     parser.add_argument('--eps', type=float, default=0.03)
     parser.add_argument('--pgd-steps', type=int, default=10)
     parser.add_argument('--pgd-alpha', type=float, default=0.01)
+
+    # AFSL options
+    parser.add_argument('--use-afsl', action='store_true', help='Enable AFSL loss (CE + KL consistency + feature similarity)')
+    parser.add_argument('--afsl-attack', type=str, default='fgsm', help='fgsm|pgd attack used to generate adversarial pairs for AFSL')
+    parser.add_argument('--lambda-adv', type=float, default=1.0, help='Weight for AFSL adversarial consistency term')
+    parser.add_argument('--lambda-sim', type=float, default=1.0, help='Weight for AFSL feature similarity term')
+    parser.add_argument('--sim-metric', type=str, default='cosine', help='Similarity metric: cosine|mse')
 
     parser.add_argument('--save-dir', type=str, default='artifacts')
     parser.add_argument('--resume', type=str, default=None)
@@ -170,12 +201,20 @@ def main():
             print(f"Resumed from {ckpt_path} at epoch {start_epoch}")
 
     for epoch in range(start_epoch, args.epochs):
-        train_loss, train_acc = train_epoch(
+        train_loss, train_acc, train_metrics = train_epoch(
             model, train_loader, optimizer, device,
-            adv_train=args.adv_train, eps=args.eps, pgd_steps=args.pgd_steps, pgd_alpha=args.pgd_alpha
+            adv_train=args.adv_train, eps=args.eps, pgd_steps=args.pgd_steps, pgd_alpha=args.pgd_alpha,
+            use_afsl=args.use_afsl, afsl_attack=args.afsl_attack, lambda_adv=args.lambda_adv, lambda_sim=args.lambda_sim, sim_metric=args.sim_metric,
         )
         val_loss, val_acc = eval_epoch(model, val_loader, device, attack_mode='none')
-        print(f"Epoch {epoch+1}/{args.epochs}  train_loss={train_loss:.4f} train_acc={train_acc:.4f}  val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
+        if args.use_afsl and train_metrics is not None:
+            print(
+                f"Epoch {epoch+1}/{args.epochs}  train_loss={train_loss:.4f} train_acc={train_acc:.4f}  "
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}  "
+                f"AFSL(l_cls={train_metrics['l_cls']:.4f}, l_adv={train_metrics['l_adv']:.4f}, l_sim={train_metrics['l_sim']:.4f})"
+            )
+        else:
+            print(f"Epoch {epoch+1}/{args.epochs}  train_loss={train_loss:.4f} train_acc={train_acc:.4f}  val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
         # checkpointing
         ckpt = {
             'model_state': model.state_dict(),

@@ -1,5 +1,10 @@
 import torch.nn as nn
 from torchvision import models, transforms
+try:
+    import timm
+except Exception:
+    timm = None
+from utils import attach_penultimate_feature_hook
 
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -48,6 +53,40 @@ def resnet50_backbone(num_classes: int = 2, pretrained: bool = True, freeze_back
     return model
 
 
+def _xception_transforms(train: bool):
+    # Xception is typically trained at 299x299 with ImageNet normalization
+    size = 299
+    if train:
+        return transforms.Compose([
+            transforms.RandomResizedCrop(size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
+    else:
+        return transforms.Compose([
+            transforms.Resize(int(size * 1.15)),
+            transforms.CenterCrop(size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
+
+
+def xception_backbone(num_classes: int = 2, pretrained: bool = True, freeze_backbone: bool = False):
+    if timm is None:
+        raise ImportError("timm is required for xception backbone. Please install timm.")
+    # Create model with desired num_classes
+    model = timm.create_model('xception', pretrained=pretrained, num_classes=num_classes)
+    if freeze_backbone:
+        for p in model.parameters():
+            p.requires_grad = False
+        # Unfreeze typical classifier params if named accordingly
+        for name, p in model.named_parameters():
+            if any(k in name for k in ('classifier', 'fc', 'head')):
+                p.requires_grad = True
+    return model
+
+
 def mobilenet_v3_backbone(num_classes: int = 2, pretrained: bool = True, freeze_backbone: bool = False, variant: str = 'large') -> nn.Module:
     if variant == 'large':
         model = models.mobilenet_v3_large(pretrained=pretrained)
@@ -84,6 +123,14 @@ def get_model_and_transforms(name: str, num_classes: int = 2, pretrained: bool =
         from models import SmallCNN
         model = SmallCNN(num_classes=num_classes)
         train_tf, val_tf = _smallcnn_transforms(train=True, size=64), _smallcnn_transforms(train=False, size=64)
+    elif name in ('xception', 'xceptionnet'):
+        model = xception_backbone(num_classes=num_classes, pretrained=pretrained, freeze_backbone=freeze_backbone)
+        train_tf, val_tf = _xception_transforms(train=True), _xception_transforms(train=False)
     else:
         raise ValueError(f"Unknown backbone: {name}")
+    # Attach a feature hook for AFSL to capture penultimate features
+    try:
+        attach_penultimate_feature_hook(model)
+    except Exception:
+        pass
     return model, train_tf, val_tf

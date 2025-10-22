@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from pathlib import Path
+import json
 import torch
 import io
 from PIL import Image
@@ -10,6 +11,7 @@ import torchvision.transforms as T
 
 APP_ROOT = Path(__file__).parent
 ARTIFACT_PATH = APP_ROOT / 'artifacts' / 'detector.pt'
+META_PATH = ARTIFACT_PATH.with_suffix('.meta.json')
 
 app = FastAPI(title='Adversarial Deepfake Detector Demo')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
@@ -34,11 +36,36 @@ def load_model():
 
 MODEL, MODEL_TYPE = load_model()
 
-transform = T.Compose([
-    T.Resize((224, 224)),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+def load_transform():
+    # Default
+    size = 224
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    try:
+        if META_PATH.exists():
+            with open(META_PATH, 'r') as f:
+                meta = json.load(f)
+            size = int(meta.get('input_size', size))
+            norm = meta.get('normalize', {}) or {}
+            m = norm.get('mean', mean)
+            s = norm.get('std', std)
+            # If None (e.g., smallcnn), skip normalization
+            if m is None or s is None:
+                return T.Compose([
+                    T.Resize((size, size)),
+                    T.ToTensor(),
+                ])
+            mean, std = m, s
+    except Exception as e:
+        print('Warning: failed to read metadata, using defaults:', e)
+
+    return T.Compose([
+        T.Resize((size, size)),
+        T.ToTensor(),
+        T.Normalize(mean=mean, std=std)
+    ])
+
+transform = load_transform()
 
 
 @app.get('/')
