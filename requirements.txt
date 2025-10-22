@@ -1,6 +1,13 @@
+## Core ML
 torch>=1.11.0
 torchvision
 numpy
-tqdm
 Pillow
+
+## Face detection (optional; used by tools/face_preprocess.py)
 facenet-pytorch
+
+## API server (optional; used by server.py)
+fastapi
+uvicorn
+python-multipart
